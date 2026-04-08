@@ -7,11 +7,12 @@ CREATE TABLE IF NOT EXISTS members (
   created_at  TEXT    NOT NULL,
   approved_at TEXT,
   expires_at  TEXT,   -- ISO timestamp: approved_at + 1 year, NULL until approved
-  occupation  TEXT,
-  city        TEXT,
-  state       TEXT,
-  pincode     TEXT,
-  phone       TEXT
+  occupation      TEXT,
+  city            TEXT,
+  state           TEXT,
+  pincode         TEXT,
+  phone           TEXT,
+  reminders_sent  INTEGER NOT NULL DEFAULT 0  -- 0=none, 1=30-day, 2=7-day, 3=expiry
 );
 
 CREATE TABLE IF NOT EXISTS admins (

@@ -729,6 +729,90 @@ async function handleAdminRemoveAdmin(request, url, env) {
 // Router
 // ---------------------------------------------------------------------------
 
+/** Build the HTML body for a membership expiry reminder email */
+function reminderEmailHtml(member, daysLeft, reminderNum, env) {
+  const expired   = daysLeft <= 0;
+  const renewUrl  = `${env.WORKER_URL}/renew-request?email=${encodeURIComponent(member.email)}`;
+  const urgency   = reminderNum === 3 ? '#dc2626' : reminderNum === 2 ? '#d97706' : '#2563eb';
+  const heading   = expired
+    ? `Your membership has expired`
+    : `Your membership expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+  const body      = expired
+    ? `<p>Your membership expired on <strong>${new Date(member.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</strong>.</p>
+       <p>Renew now to continue enjoying member benefits.</p>`
+    : `<p>Your membership is set to expire on <strong>${new Date(member.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</strong>.</p>
+       <p>Please renew before it expires to avoid any interruption.</p>`;
+
+  return `
+    <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:2rem 1.5rem">
+      <h2 style="color:${urgency};margin:0 0 1rem">${heading}</h2>
+      <p>Dear ${escapeHtml(member.name)},</p>
+      ${body}
+      <p style="margin-top:1.5rem">
+        <a href="${renewUrl}"
+           style="background:${urgency};color:#fff;padding:10px 24px;border-radius:5px;
+                  text-decoration:none;display:inline-block;font-weight:600">
+          Renew Membership
+        </a>
+      </p>
+      <p style="color:#999;font-size:.8rem;margin-top:2rem">
+        This is reminder ${reminderNum} of 3.
+        If you have already renewed, please ignore this email.
+      </p>
+    </div>`;
+}
+
+/** Cron handler — sends up to 3 expiry reminders per member */
+async function handleAdminRemind(request, env) {
+  const authed = await validateAdminToken(request, env);
+  if (!authed) return jsonAdminErr('Unauthorized.', 401, env, request);
+
+  const now = new Date();
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, email, expires_at, reminders_sent
+     FROM members
+     WHERE status = 'approved'
+       AND expires_at IS NOT NULL
+       AND reminders_sent < 3`
+  ).all();
+
+  let sent = 0;
+  const skipped = [];
+  for (const m of results) {
+    const daysLeft = Math.ceil((new Date(m.expires_at) - now) / 86_400_000);
+
+    let nextReminder = null;
+    if      (m.reminders_sent === 0 && daysLeft <= 30) nextReminder = 1;
+    else if (m.reminders_sent === 1 && daysLeft <= 7)  nextReminder = 2;
+    else if (m.reminders_sent === 2 && daysLeft <= 0)  nextReminder = 3;
+
+    if (!nextReminder) { skipped.push(m.email); continue; }
+
+    const subject = daysLeft <= 0
+      ? `Your membership has expired`
+      : `Membership reminder: expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+
+    try {
+      await sendEmail(env, {
+        to: m.email,
+        subject,
+        html: reminderEmailHtml(m, daysLeft, nextReminder, env),
+      });
+      await env.DB.prepare(
+        `UPDATE members SET reminders_sent = ? WHERE id = ?`
+      ).bind(nextReminder, m.id).run();
+      sent++;
+    } catch (e) {
+      console.error(`Reminder ${nextReminder} failed for member ${m.id}:`, e);
+    }
+  }
+
+  return new Response(JSON.stringify({ ok: true, sent, skipped: skipped.length }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -757,6 +841,7 @@ export default {
       case 'POST /admin/renew':      return handleAdminRenew(request, env);
       case 'GET /admin/admins':      return handleAdminListAdmins(request, env);
       case 'POST /admin/admins':     return handleAdminAddAdmin(request, env);
+      case 'POST /admin/remind':     return handleAdminRemind(request, env);
       default:                       return new Response('Not found', { status: 404 });
     }
   },
