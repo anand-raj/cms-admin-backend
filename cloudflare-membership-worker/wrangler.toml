@@ -5,7 +5,7 @@ compatibility_date = "2025-01-01"
 [vars]
 SITE_URL             = "https://anand-raj.github.io"
 WORKER_URL           = "https://cms-membership.e-anandraj.workers.dev"
-ADMIN_URL            = "https://admin-portal.pages.dev"
+ADMIN_URL            = "https://admin-portal-93k.pages.dev"
 ADMIN_EMAIL          = "e.anandraj@hotmail.com"
 FROM_EMAIL           = "onboarding@resend.dev"
 MAX_NEWSLETTER_RECIPIENTS = "500"
