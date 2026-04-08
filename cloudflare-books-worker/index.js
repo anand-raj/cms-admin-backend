@@ -31,10 +31,13 @@ function corsHeaders(env) {
   };
 }
 
-function adminCorsHeaders(env) {
+function adminCorsHeaders(env, request) {
+  const origin  = (request && request.headers.get('Origin')) || '';
+  const allowed = [env.ADMIN_URL, 'http://localhost:5173'];
+  const allowedOrigin = allowed.includes(origin) ? origin : env.ADMIN_URL;
   return {
-    'Access-Control-Allow-Origin': env.ADMIN_URL,
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
@@ -439,7 +442,7 @@ async function handleVerify(request, env) {
 async function handleAdminListBooks(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -448,21 +451,21 @@ async function handleAdminListBooks(request, env) {
   ).all();
 
   return new Response(JSON.stringify(results), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
 async function handleAdminCreateBook(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -472,7 +475,7 @@ async function handleAdminCreateBook(request, env) {
 
   if (!title || !slug || isNaN(price) || price <= 0) {
     return new Response(JSON.stringify({ error: 'title, slug, and a positive price (₹) are required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -487,12 +490,12 @@ async function handleAdminCreateBook(request, env) {
     ).bind(slug, title, author, description, price_paise, in_stock).run();
 
     return new Response(JSON.stringify({ ok: true, id: result.meta.last_row_id }), {
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   } catch (e) {
     if (e.message.includes('UNIQUE constraint failed')) {
       return new Response(JSON.stringify({ error: 'A book with this slug already exists' }), {
-        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
       });
     }
     throw e;
@@ -502,21 +505,21 @@ async function handleAdminCreateBook(request, env) {
 async function handleAdminUpdateBook(request, url, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   const id = parseInt(url.pathname.split('/').pop(), 10);
   if (!id) {
     return new Response(JSON.stringify({ error: 'Invalid book id' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -526,7 +529,7 @@ async function handleAdminUpdateBook(request, url, env) {
 
   if (!title) {
     return new Response(JSON.stringify({ error: 'title is required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -541,14 +544,14 @@ async function handleAdminUpdateBook(request, url, env) {
   ).bind(...binds).run();
 
   return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
 async function handleAdminListOrders(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -560,7 +563,7 @@ async function handleAdminListOrders(request, env) {
   ).all();
 
   return new Response(JSON.stringify(results), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -576,7 +579,7 @@ export default {
       const isAdmin = url.pathname.startsWith('/admin/');
       return new Response(null, {
         status: 204,
-        headers: isAdmin ? adminCorsHeaders(env) : corsHeaders(env),
+        headers: isAdmin ? adminCorsHeaders(env, request) : corsHeaders(env),
       });
     }
 

@@ -400,10 +400,13 @@ async function requireAdmin(request, env) {
   return null;
 }
 
-function adminCorsHeaders(env) {
+function adminCorsHeaders(env, request) {
+  const origin  = (request && request.headers.get('Origin')) || '';
+  const allowed = [env.ADMIN_URL, 'http://localhost:5173'];
+  const allowedOrigin = allowed.includes(origin) ? origin : env.ADMIN_URL;
   return {
-    'Access-Control-Allow-Origin': env.ADMIN_URL,
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
@@ -416,7 +419,7 @@ async function handleAdminMembers(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -427,7 +430,7 @@ async function handleAdminMembers(request, env) {
   ).all();
 
   return new Response(JSON.stringify(results), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -440,20 +443,20 @@ async function handleAdminApprove(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
   const id = parseInt(body.id, 10);
   if (!id) {
     return new Response(JSON.stringify({ error: 'id is required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -463,13 +466,13 @@ async function handleAdminApprove(request, env) {
 
   if (!row) {
     return new Response(JSON.stringify({ error: 'Member not found' }), {
-      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   if (row.status === 'approved') {
     return new Response(JSON.stringify({ ok: true, already: true }), {
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -491,7 +494,7 @@ async function handleAdminApprove(request, env) {
   });
 
   return new Response(JSON.stringify({ ok: true, expires_at: expiresAt }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -499,20 +502,20 @@ async function handleAdminReject(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
   const id = parseInt(body.id, 10);
   if (!id) {
     return new Response(JSON.stringify({ error: 'id is required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -522,13 +525,13 @@ async function handleAdminReject(request, env) {
 
   if (!row) {
     return new Response(JSON.stringify({ error: 'Member not found' }), {
-      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   if (row.status === 'rejected') {
     return new Response(JSON.stringify({ ok: true, already: true }), {
-      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -537,7 +540,7 @@ async function handleAdminReject(request, env) {
   ).bind(id).run();
 
   return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -548,20 +551,20 @@ async function handleAdminReject(request, env) {
 async function handleAdminRenew(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
   const id = parseInt(body.id, 10);
   if (!id) {
     return new Response(JSON.stringify({ error: 'id is required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -571,12 +574,12 @@ async function handleAdminRenew(request, env) {
 
   if (!row) {
     return new Response(JSON.stringify({ error: 'Member not found' }), {
-      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
   if (row.status !== 'approved') {
     return new Response(JSON.stringify({ error: 'Member is not approved' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -586,7 +589,7 @@ async function handleAdminRenew(request, env) {
   ).bind(newExpiry, id).run();
 
   return new Response(JSON.stringify({ ok: true, expires_at: newExpiry }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -599,7 +602,7 @@ async function handleAdminRenew(request, env) {
 async function handleAdminListAdmins(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -608,7 +611,7 @@ async function handleAdminListAdmins(request, env) {
   ).all();
 
   return new Response(JSON.stringify(results), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -616,14 +619,14 @@ async function handleAdminAddAdmin(request, env) {
   const role = await requireAdmin(request, env);
   if (role !== 'owner') {
     return new Response(JSON.stringify({ error: 'Only owners can add admins' }), {
-      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -631,7 +634,7 @@ async function handleAdminAddAdmin(request, env) {
   const newRole = ['owner', 'moderator'].includes(body.role) ? body.role : 'moderator';
   if (!github_login) {
     return new Response(JSON.stringify({ error: 'github_login is required' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -642,14 +645,14 @@ async function handleAdminAddAdmin(request, env) {
   } catch (e) {
     if (e.message.includes('UNIQUE constraint failed')) {
       return new Response(JSON.stringify({ error: 'This admin already exists' }), {
-        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
       });
     }
     throw e;
   }
 
   return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -657,21 +660,21 @@ async function handleAdminRemoveAdmin(request, url, env) {
   const role = await requireAdmin(request, env);
   if (role !== 'owner') {
     return new Response(JSON.stringify({ error: 'Only owners can remove admins' }), {
-      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   const id = parseInt(url.pathname.split('/').pop(), 10);
   if (!id) {
     return new Response(JSON.stringify({ error: 'Invalid id' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
   await env.DB.prepare(`DELETE FROM admins WHERE id = ?`).bind(id).run();
 
   return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
 
@@ -687,7 +690,7 @@ export default {
       const isAdmin = url.pathname.startsWith('/admin/');
       return new Response(null, {
         status: 204,
-        headers: isAdmin ? adminCorsHeaders(env) : corsHeaders(env),
+        headers: isAdmin ? adminCorsHeaders(env, request) : corsHeaders(env),
       });
     }
 
