@@ -140,16 +140,32 @@ async function handleSubscribe(request, env) {
     return jsonErr('Invalid request body.', 400, env);
   }
 
-  const name     = String(body.name    || '').trim().slice(0, 100);
-  const email    = String(body.email   || '').trim().toLowerCase().slice(0, 254);
-  const honeypot = String(body.website || '').trim();
+  const name       = String(body.name       || '').trim().slice(0, 100);
+  const email      = String(body.email      || '').trim().toLowerCase().slice(0, 254);
+  const occupation = String(body.occupation || '').trim().slice(0, 100);
+  const city       = String(body.city       || '').trim().slice(0, 100);
+  const state      = String(body.state      || '').trim().slice(0, 100);
+  const pincode    = String(body.pincode    || '').trim().slice(0, 10);
+  const phone      = String(body.phone      || '').trim().slice(0, 20);
+  const honeypot   = String(body.website    || '').trim();
 
   // Silently accept bots without saving
   if (honeypot) return jsonOk({ ok: true }, env);
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const emailRegex   = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const pincodeRegex = /^[1-9][0-9]{5}$/;
+  const phoneRegex   = /^\+?[0-9]{10,13}$/;
+
   if (!name || !email || !emailRegex.test(email)) {
     return jsonErr('Name and a valid email are required.', 400, env);
+  }
+  if (!city)    return jsonErr('City is required.', 400, env);
+  if (!state)   return jsonErr('State is required.', 400, env);
+  if (!pincode || !pincodeRegex.test(pincode)) {
+    return jsonErr('A valid 6-digit pincode is required.', 400, env);
+  }
+  if (phone && !phoneRegex.test(phone.replace(/\s/g, ''))) {
+    return jsonErr('Phone number must be 10–13 digits.', 400, env);
   }
 
   const token     = crypto.randomUUID();
@@ -157,9 +173,9 @@ async function handleSubscribe(request, env) {
 
   try {
     await env.DB.prepare(
-      `INSERT INTO members (name, email, status, token, created_at)
-       VALUES (?, ?, 'pending', ?, ?)`
-    ).bind(name, email, token, createdAt).run();
+      `INSERT INTO members (name, email, status, token, created_at, occupation, city, state, pincode, phone)
+       VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(name, email, token, createdAt, occupation, city, state, pincode, phone || null).run();
   } catch (e) {
     if (e.message.includes('UNIQUE constraint failed')) {
       return jsonErr('This email is already registered.', 409, env);
@@ -176,6 +192,11 @@ async function handleSubscribe(request, env) {
     subject: `New membership request from ${escapeHtml(name)}`,
     html: `
       <p><strong>${escapeHtml(name)}</strong> (<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>) has requested membership.</p>
+      <table style="border-collapse:collapse;font-size:0.9rem;margin:0.75rem 0">
+        ${occupation ? `<tr><td style="padding:3px 12px 3px 0;color:#666">Occupation</td><td>${escapeHtml(occupation)}</td></tr>` : ''}
+        <tr><td style="padding:3px 12px 3px 0;color:#666">Location</td><td>${escapeHtml(city)}, ${escapeHtml(state)} – ${escapeHtml(pincode)}</td></tr>
+        ${phone ? `<tr><td style="padding:3px 12px 3px 0;color:#666">Phone</td><td>${escapeHtml(phone)}</td></tr>` : ''}
+      </table>
       <p style="margin-top:1.5rem">
         <a href="${approveUrl}"
            style="background:#16a34a;color:#fff;padding:10px 22px;border-radius:5px;
@@ -424,7 +445,8 @@ async function handleAdminMembers(request, env) {
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT id, name, email, status, created_at, approved_at, expires_at
+    `SELECT id, name, email, status, created_at, approved_at, expires_at,
+            occupation, city, state, pincode, phone
      FROM members
      ORDER BY created_at DESC`
   ).all();

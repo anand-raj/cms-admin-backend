@@ -6,7 +6,12 @@ CREATE TABLE IF NOT EXISTS members (
   token       TEXT    NOT NULL UNIQUE,
   created_at  TEXT    NOT NULL,
   approved_at TEXT,
-  expires_at  TEXT    -- ISO timestamp: approved_at + 1 year, NULL until approved
+  expires_at  TEXT,   -- ISO timestamp: approved_at + 1 year, NULL until approved
+  occupation  TEXT,
+  city        TEXT,
+  state       TEXT,
+  pincode     TEXT,
+  phone       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS admins (
