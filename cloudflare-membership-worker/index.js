@@ -15,7 +15,7 @@
 //   FROM_EMAIL           (plain)     Sender address — use "onboarding@resend.dev" for sandbox
 //   SITE_URL             (plain)     Your site origin for CORS, e.g. https://anand-raj.github.io
 //   WORKER_URL           (plain)     This worker's URL, e.g. https://cms-membership.xxx.workers.dev
-//   GITHUB_REPO          (plain)     Repo for admin auth, e.g. anand-raj/cms-hugo-decap
+//   ADMIN_URL            (plain)     Admin portal origin for CORS, e.g. https://admin-portal.pages.dev
 //   NEWSLETTER_SECRET    (encrypted) Fallback secret for automated newsletter sends (curl/CI)
 //
 // D1 database binding: DB
@@ -51,6 +51,12 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function oneYearFrom(isoDate) {
+  const d = new Date(isoDate);
+  d.setFullYear(d.getFullYear() + 1);
+  return d.toISOString();
 }
 
 function corsHeaders(env) {
@@ -206,9 +212,11 @@ async function handleApprove(url, env) {
     return htmlPage('Already Approved', `<p><strong>${escapeHtml(row.name)}</strong> is already a member.</p>`);
   }
 
+  const approvedAt = new Date().toISOString();
+  const expiresAt  = oneYearFrom(approvedAt);
   await env.DB.prepare(
-    `UPDATE members SET status = 'approved', approved_at = ? WHERE token = ?`
-  ).bind(new Date().toISOString(), token).run();
+    `UPDATE members SET status = 'approved', approved_at = ?, expires_at = ? WHERE token = ?`
+  ).bind(approvedAt, expiresAt, token).run();
 
   await sendEmail(env, {
     to: row.email,
@@ -216,6 +224,7 @@ async function handleApprove(url, env) {
     html: `
       <p>Hi <strong>${escapeHtml(row.name)}</strong>,</p>
       <p>Your membership request has been approved. Welcome aboard!</p>
+      <p>Your membership is valid until <strong>${expiresAt.slice(0, 10)}</strong>.</p>
       <p>You will now receive newsletters and updates from us.</p>
     `,
   });
@@ -285,7 +294,7 @@ async function handleNewsletter(request, env) {
 
   const MAX_RECIPIENTS = parseInt(env.MAX_NEWSLETTER_RECIPIENTS || '500', 10);
   const { results } = await env.DB.prepare(
-    `SELECT name, email FROM members WHERE status = 'approved' LIMIT ?`
+    `SELECT name, email FROM members WHERE status = 'approved' AND (expires_at IS NULL OR expires_at > datetime('now')) LIMIT ?`
   ).bind(MAX_RECIPIENTS + 1).all();
 
   if (!results.length) {
@@ -337,60 +346,48 @@ async function handleNewsletter(request, env) {
 }
 
 // ---------------------------------------------------------------------------
-// Admin helpers
+// Admin auth — D1 admins table
 // ---------------------------------------------------------------------------
 
-async function validateGitHubToken(token, env) {
-  if (!env.GITHUB_REPO) {
-    console.error('GITHUB_REPO env var is not set');
-    return false;
-  }
-
-  // Check cache first (keyed on SHA-256 of token, TTL 5 min)
-  const enc = new TextEncoder();
-  const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(token));
+async function validateAdminToken(ghToken, env) {
+  // Check cache (SHA-256 keyed, 5-min TTL)
+  const enc     = new TextEncoder();
+  const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(ghToken));
   const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-  const cacheKey = new Request(`https://internal-gh-auth-cache/${hashHex}`);
+  const cacheKey = new Request(`https://internal-admin-auth-cache/${hashHex}`);
   const cache    = caches.default;
   const cached   = await cache.match(cacheKey);
-  if (cached) return (await cached.text()) === 'true';
+  if (cached) {
+    const text = await cached.text();
+    return text === 'none' ? null : text; // returns role string or null
+  }
 
-  async function storeResult(valid) {
-    // Cache for 5 minutes regardless of outcome (rate-limit protection)
-    await cache.put(cacheKey, new Response(String(valid), {
+  async function storeResult(role) {
+    await cache.put(cacheKey, new Response(role ?? 'none', {
       headers: { 'Cache-Control': 'public, max-age=300' },
     }));
-    return valid;
+    return role;
   }
 
   try {
-    // Step 1: resolve the authenticated user's login
     const userRes = await fetch('https://api.github.com/user', {
       headers: {
-        Authorization: `token ${token}`,
+        Authorization: `token ${ghToken}`,
         'User-Agent': 'cms-membership-worker',
         Accept: 'application/vnd.github+json',
       },
     });
-    if (!userRes.ok) return storeResult(false);
+    if (!userRes.ok) return storeResult(null);
     const { login } = await userRes.json();
-    if (!login) return storeResult(false);
+    if (!login) return storeResult(null);
 
-    // Step 2: verify they are a repository collaborator
-    const collabRes = await fetch(
-      `https://api.github.com/repos/${env.GITHUB_REPO}/collaborators/${encodeURIComponent(login)}`,
-      {
-        headers: {
-          Authorization: `token ${token}`,
-          'User-Agent': 'cms-membership-worker',
-          Accept: 'application/vnd.github+json',
-        },
-      }
-    );
-    // 204 = is a collaborator, 404 = not a collaborator
-    return storeResult(collabRes.status === 204);
+    const row = await env.DB.prepare(
+      `SELECT role FROM admins WHERE github_login = ?`
+    ).bind(login).first();
+
+    return storeResult(row ? row.role : null);
   } catch {
-    return false; // network error — do not cache
+    return null; // network error — do not cache
   }
 }
 
@@ -398,15 +395,15 @@ async function requireAdmin(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   if (authHeader.startsWith('token ') || authHeader.startsWith('Bearer ')) {
     const ghToken = authHeader.replace(/^(token|Bearer)\s+/, '');
-    return validateGitHubToken(ghToken, env);
+    return validateAdminToken(ghToken, env);
   }
-  return false;
+  return null;
 }
 
 function adminCorsHeaders(env) {
   return {
-    'Access-Control-Allow-Origin': env.SITE_URL,
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Origin': env.ADMIN_URL,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
@@ -424,7 +421,7 @@ async function handleAdminMembers(request, env) {
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT id, name, email, status, created_at, approved_at
+    `SELECT id, name, email, status, created_at, approved_at, expires_at
      FROM members
      ORDER BY created_at DESC`
   ).all();
@@ -476,9 +473,11 @@ async function handleAdminApprove(request, env) {
     });
   }
 
+  const approvedAt = new Date().toISOString();
+  const expiresAt  = oneYearFrom(approvedAt);
   await env.DB.prepare(
-    `UPDATE members SET status = 'approved', approved_at = ? WHERE id = ?`
-  ).bind(new Date().toISOString(), id).run();
+    `UPDATE members SET status = 'approved', approved_at = ?, expires_at = ? WHERE id = ?`
+  ).bind(approvedAt, expiresAt, id).run();
 
   await sendEmail(env, {
     to: row.email,
@@ -486,11 +485,12 @@ async function handleAdminApprove(request, env) {
     html: `
       <p>Hi <strong>${escapeHtml(row.name)}</strong>,</p>
       <p>Your membership request has been approved. Welcome aboard!</p>
+      <p>Your membership is valid until <strong>${expiresAt.slice(0, 10)}</strong>.</p>
       <p>You will now receive newsletters and updates from us.</p>
     `,
   });
 
-  return new Response(JSON.stringify({ ok: true }), {
+  return new Response(JSON.stringify({ ok: true, expires_at: expiresAt }), {
     headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
   });
 }
@@ -542,6 +542,140 @@ async function handleAdminReject(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /admin/renew   body: { id }
+// ---------------------------------------------------------------------------
+
+async function handleAdminRenew(request, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+  const id = parseInt(body.id, 10);
+  if (!id) {
+    return new Response(JSON.stringify({ error: 'id is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT id, name, email, status FROM members WHERE id = ?`
+  ).bind(id).first();
+
+  if (!row) {
+    return new Response(JSON.stringify({ error: 'Member not found' }), {
+      status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+  if (row.status !== 'approved') {
+    return new Response(JSON.stringify({ error: 'Member is not approved' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const newExpiry = oneYearFrom(new Date().toISOString());
+  await env.DB.prepare(
+    `UPDATE members SET expires_at = ? WHERE id = ?`
+  ).bind(newExpiry, id).run();
+
+  return new Response(JSON.stringify({ ok: true, expires_at: newExpiry }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GET    /admin/admins       — list all admins
+// POST   /admin/admins       — add admin  body: { github_login, role }
+// DELETE /admin/admins/:id   — remove admin
+// ---------------------------------------------------------------------------
+
+async function handleAdminListAdmins(request, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, github_login, role, added_at FROM admins ORDER BY added_at DESC`
+  ).all();
+
+  return new Response(JSON.stringify(results), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+async function handleAdminAddAdmin(request, env) {
+  const role = await requireAdmin(request, env);
+  if (role !== 'owner') {
+    return new Response(JSON.stringify({ error: 'Only owners can add admins' }), {
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const github_login = String(body.github_login || '').trim().toLowerCase().slice(0, 100);
+  const newRole = ['owner', 'moderator'].includes(body.role) ? body.role : 'moderator';
+  if (!github_login) {
+    return new Response(JSON.stringify({ error: 'github_login is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO admins (github_login, role, added_at) VALUES (?, ?, ?)`
+    ).bind(github_login, newRole, new Date().toISOString()).run();
+  } catch (e) {
+    if (e.message.includes('UNIQUE constraint failed')) {
+      return new Response(JSON.stringify({ error: 'This admin already exists' }), {
+        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      });
+    }
+    throw e;
+  }
+
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+async function handleAdminRemoveAdmin(request, url, env) {
+  const role = await requireAdmin(request, env);
+  if (role !== 'owner') {
+    return new Response(JSON.stringify({ error: 'Only owners can remove admins' }), {
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const id = parseInt(url.pathname.split('/').pop(), 10);
+  if (!id) {
+    return new Response(JSON.stringify({ error: 'Invalid id' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  await env.DB.prepare(`DELETE FROM admins WHERE id = ?`).bind(id).run();
+
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -557,15 +691,23 @@ export default {
       });
     }
 
+    // Parameterised admin routes
+    if (request.method === 'DELETE' && url.pathname.startsWith('/admin/admins/')) {
+      return handleAdminRemoveAdmin(request, url, env);
+    }
+
     switch (`${request.method} ${url.pathname}`) {
-      case 'POST /subscribe':       return handleSubscribe(request, env);
-      case 'GET /approve':          return handleApprove(url, env);
-      case 'GET /reject':           return handleReject(url, env);
-      case 'POST /newsletter':      return handleNewsletter(request, env);
-      case 'GET /admin/members':    return handleAdminMembers(request, env);
-      case 'POST /admin/approve':   return handleAdminApprove(request, env);
-      case 'POST /admin/reject':    return handleAdminReject(request, env);
-      default:                      return new Response('Not found', { status: 404 });
+      case 'POST /subscribe':        return handleSubscribe(request, env);
+      case 'GET /approve':           return handleApprove(url, env);
+      case 'GET /reject':            return handleReject(url, env);
+      case 'POST /newsletter':       return handleNewsletter(request, env);
+      case 'GET /admin/members':     return handleAdminMembers(request, env);
+      case 'POST /admin/approve':    return handleAdminApprove(request, env);
+      case 'POST /admin/reject':     return handleAdminReject(request, env);
+      case 'POST /admin/renew':      return handleAdminRenew(request, env);
+      case 'GET /admin/admins':      return handleAdminListAdmins(request, env);
+      case 'POST /admin/admins':     return handleAdminAddAdmin(request, env);
+      default:                       return new Response('Not found', { status: 404 });
     }
   },
 };

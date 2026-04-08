@@ -31,6 +31,14 @@ function corsHeaders(env) {
   };
 }
 
+function adminCorsHeaders(env) {
+  return {
+    'Access-Control-Allow-Origin': env.ADMIN_URL,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+}
+
 function jsonOk(data, env) {
   return new Response(JSON.stringify(data), {
     headers: { 'Content-Type': 'application/json', ...corsHeaders(env) },
@@ -97,6 +105,60 @@ function validateShipping(s) {
   if (!s.state || s.state.trim().length < 2)          errors.push('State is required.');
   if (!s.pincode || !/^[1-9][0-9]{5}$/.test(s.pincode.trim())) errors.push('Valid 6-digit pincode is required.');
   return errors;
+}
+
+// ---------------------------------------------------------------------------
+// Admin auth — D1 admins table (shared with membership worker)
+// ---------------------------------------------------------------------------
+
+async function validateAdminToken(ghToken, env) {
+  const enc     = new TextEncoder();
+  const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(ghToken));
+  const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const cacheKey = new Request(`https://internal-admin-auth-cache/${hashHex}`);
+  const cache    = caches.default;
+  const cached   = await cache.match(cacheKey);
+  if (cached) {
+    const text = await cached.text();
+    return text === 'none' ? null : text;
+  }
+
+  async function storeResult(role) {
+    await cache.put(cacheKey, new Response(role ?? 'none', {
+      headers: { 'Cache-Control': 'public, max-age=300' },
+    }));
+    return role;
+  }
+
+  try {
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `token ${ghToken}`,
+        'User-Agent': 'cms-books-worker',
+        Accept: 'application/vnd.github+json',
+      },
+    });
+    if (!userRes.ok) return storeResult(null);
+    const { login } = await userRes.json();
+    if (!login) return storeResult(null);
+
+    const row = await env.DB.prepare(
+      `SELECT role FROM admins WHERE github_login = ?`
+    ).bind(login).first();
+
+    return storeResult(row ? row.role : null);
+  } catch {
+    return null;
+  }
+}
+
+async function requireAdmin(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.startsWith('token ') || authHeader.startsWith('Bearer ')) {
+    const ghToken = authHeader.replace(/^(token|Bearer)\s+/, '');
+    return validateAdminToken(ghToken, env);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +430,141 @@ async function handleVerify(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// GET  /admin/books        — list all books (inc. unlisted)
+// POST /admin/books        — add a book
+// PUT  /admin/books/:id    — update a book
+// GET  /admin/orders       — list all orders
+// ---------------------------------------------------------------------------
+
+async function handleAdminListBooks(request, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, slug, title, author, description, price_paise, in_stock FROM books ORDER BY id DESC`
+  ).all();
+
+  return new Response(JSON.stringify(results), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+async function handleAdminCreateBook(request, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const title = String(body.title || '').trim().slice(0, 200);
+  const slug  = String(body.slug  || title.toLowerCase().replace(/[^a-z0-9]+/g, '-')).trim().slice(0, 100);
+  const price = parseInt(body.price, 10);
+
+  if (!title || !slug || isNaN(price) || price <= 0) {
+    return new Response(JSON.stringify({ error: 'title, slug, and a positive price (₹) are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const author      = String(body.author      || '').trim().slice(0, 200);
+  const description = String(body.description || '').trim().slice(0, 2000);
+  const in_stock    = body.stock !== undefined ? (parseInt(body.stock, 10) > 0 ? 1 : 0) : 1;
+  const price_paise = price * 100;
+
+  try {
+    const result = await env.DB.prepare(
+      `INSERT INTO books (slug, title, author, description, price_paise, in_stock) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(slug, title, author, description, price_paise, in_stock).run();
+
+    return new Response(JSON.stringify({ ok: true, id: result.meta.last_row_id }), {
+      headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  } catch (e) {
+    if (e.message.includes('UNIQUE constraint failed')) {
+      return new Response(JSON.stringify({ error: 'A book with this slug already exists' }), {
+        status: 409, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+      });
+    }
+    throw e;
+  }
+}
+
+async function handleAdminUpdateBook(request, url, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const id = parseInt(url.pathname.split('/').pop(), 10);
+  if (!id) {
+    return new Response(JSON.stringify({ error: 'Invalid book id' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  let body;
+  try { body = await request.json(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const title       = String(body.title       || '').trim().slice(0, 200);
+  const author      = String(body.author      || '').trim().slice(0, 200);
+  const description = String(body.description || '').trim().slice(0, 2000);
+
+  if (!title) {
+    return new Response(JSON.stringify({ error: 'title is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const updates = ['title = ?', 'author = ?', 'description = ?'];
+  const binds   = [title, author, description];
+  if (body.price !== undefined) { updates.push('price_paise = ?'); binds.push(parseInt(body.price, 10) * 100); }
+  if (body.stock !== undefined) { updates.push('in_stock = ?');    binds.push(parseInt(body.stock, 10) > 0 ? 1 : 0); }
+  binds.push(id);
+
+  await env.DB.prepare(
+    `UPDATE books SET ${updates.join(', ')} WHERE id = ?`
+  ).bind(...binds).run();
+
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+async function handleAdminListOrders(request, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+    });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, razorpay_order_id, book_slug, book_title,
+            buyer_name AS name, buyer_email AS email, buyer_phone,
+            shipping_address, amount_paise AS amount, status, created_at, paid_at
+     FROM orders ORDER BY created_at DESC`
+  ).all();
+
+  return new Response(JSON.stringify(results), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env) },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -376,13 +573,25 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
+      const isAdmin = url.pathname.startsWith('/admin/');
+      return new Response(null, {
+        status: 204,
+        headers: isAdmin ? adminCorsHeaders(env) : corsHeaders(env),
+      });
+    }
+
+    // Parameterised admin routes
+    if (request.method === 'PUT' && url.pathname.startsWith('/admin/books/')) {
+      return handleAdminUpdateBook(request, url, env);
     }
 
     switch (`${request.method} ${url.pathname}`) {
-      case 'GET /books':            return handleListBooks(env);
+      case 'GET /books':               return handleListBooks(env);
       case 'POST /books/create-order': return handleCreateOrder(request, env);
       case 'POST /books/verify':       return handleVerify(request, env);
+      case 'GET /admin/books':         return handleAdminListBooks(request, env);
+      case 'POST /admin/books':        return handleAdminCreateBook(request, env);
+      case 'GET /admin/orders':        return handleAdminListOrders(request, env);
       default: return new Response('Not found', { status: 404 });
     }
   },

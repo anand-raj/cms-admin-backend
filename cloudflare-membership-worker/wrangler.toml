@@ -5,9 +5,9 @@ compatibility_date = "2025-01-01"
 [vars]
 SITE_URL             = "https://anand-raj.github.io"
 WORKER_URL           = "https://cms-membership.e-anandraj.workers.dev"
+ADMIN_URL            = "https://admin-portal.pages.dev"
 ADMIN_EMAIL          = "e.anandraj@hotmail.com"
 FROM_EMAIL           = "onboarding@resend.dev"
-GITHUB_REPO          = "anand-raj/cms-hugo-decap"
 MAX_NEWSLETTER_RECIPIENTS = "500"
 
 # Secrets (set via Cloudflare dashboard — never put in this file):

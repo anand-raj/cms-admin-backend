@@ -5,5 +5,13 @@ CREATE TABLE IF NOT EXISTS members (
   status      TEXT    NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
   token       TEXT    NOT NULL UNIQUE,
   created_at  TEXT    NOT NULL,
-  approved_at TEXT
+  approved_at TEXT,
+  expires_at  TEXT    -- ISO timestamp: approved_at + 1 year, NULL until approved
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  github_login TEXT    NOT NULL UNIQUE,
+  role         TEXT    NOT NULL DEFAULT 'moderator', -- owner | moderator
+  added_at     TEXT    NOT NULL
 );

@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS books (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   slug        TEXT    UNIQUE NOT NULL,
   title       TEXT    NOT NULL,
+  author      TEXT,
+  description TEXT,
   price_paise INTEGER NOT NULL,   -- price in paise (₹ × 100), e.g. 49900 = ₹499
   in_stock    INTEGER DEFAULT 1   -- 1 = in stock, 0 = out of stock
 );
