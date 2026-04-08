@@ -108,6 +108,24 @@ function htmlPage(title, body) {
   );
 }
 
+/** Fetch city/state from India Post Pincode API. Returns null on any failure. */
+async function lookupPincodeLocation(pincode) {
+  try {
+    const res = await fetch(`https://api.postalpincode.in/pincode/${encodeURIComponent(pincode)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data[0] && data[0].Status === 'Success' && data[0].PostOffice && data[0].PostOffice.length) {
+      const po = data[0].PostOffice[0];
+      return { city: po.District || po.Name || '', state: po.State || '' };
+    }
+  } catch {
+    // API unreachable or timed out — caller falls back to submitted values
+  }
+  return null;
+}
+
 async function sendEmail(env, { to, subject, html }) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const res = await fetch('https://api.resend.com/emails', {
@@ -159,14 +177,21 @@ async function handleSubscribe(request, env) {
   if (!name || !email || !emailRegex.test(email)) {
     return jsonErr('Name and a valid email are required.', 400, env);
   }
-  if (!city)    return jsonErr('City is required.', 400, env);
-  if (!state)   return jsonErr('State is required.', 400, env);
   if (!pincode || !pincodeRegex.test(pincode)) {
     return jsonErr('A valid 6-digit pincode is required.', 400, env);
   }
   if (phone && !phoneRegex.test(phone.replace(/\s/g, ''))) {
-    return jsonErr('Phone number must be 10–13 digits.', 400, env);
+    return jsonErr('Phone number must be 10\u201313 digits.', 400, env);
   }
+
+  // Resolve location — state is always authoritative from pincode API;
+  // city uses submitted value (user-correctable), fallback to API district.
+  const apiLocation  = await lookupPincodeLocation(pincode);
+  const resolvedState = apiLocation?.state || state;
+  const resolvedCity  = city || apiLocation?.city || '';
+
+  if (!resolvedCity)  return jsonErr('City is required.', 400, env);
+  if (!resolvedState) return jsonErr('State could not be determined from pincode. Please try again.', 400, env);
 
   const token     = crypto.randomUUID();
   const createdAt = new Date().toISOString();
@@ -175,7 +200,7 @@ async function handleSubscribe(request, env) {
     await env.DB.prepare(
       `INSERT INTO members (name, email, status, token, created_at, occupation, city, state, pincode, phone)
        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(name, email, token, createdAt, occupation, city, state, pincode, phone || null).run();
+    ).bind(name, email, token, createdAt, occupation, resolvedCity, resolvedState, pincode, phone || null).run();
   } catch (e) {
     if (e.message.includes('UNIQUE constraint failed')) {
       return jsonErr('This email is already registered.', 409, env);
@@ -194,7 +219,7 @@ async function handleSubscribe(request, env) {
       <p><strong>${escapeHtml(name)}</strong> (<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>) has requested membership.</p>
       <table style="border-collapse:collapse;font-size:0.9rem;margin:0.75rem 0">
         ${occupation ? `<tr><td style="padding:3px 12px 3px 0;color:#666">Occupation</td><td>${escapeHtml(occupation)}</td></tr>` : ''}
-        <tr><td style="padding:3px 12px 3px 0;color:#666">Location</td><td>${escapeHtml(city)}, ${escapeHtml(state)} – ${escapeHtml(pincode)}</td></tr>
+        <tr><td style="padding:3px 12px 3px 0;color:#666">Location</td><td>${escapeHtml(resolvedCity)}, ${escapeHtml(resolvedState)} \u2013 ${escapeHtml(pincode)}</td></tr>
         ${phone ? `<tr><td style="padding:3px 12px 3px 0;color:#666">Phone</td><td>${escapeHtml(phone)}</td></tr>` : ''}
       </table>
       <p style="margin-top:1.5rem">
