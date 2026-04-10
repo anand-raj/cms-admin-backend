@@ -17,7 +17,8 @@ MOCK_PAYMENTS = "false"
 # Uses the same D1 database as the membership worker
 # database_id is from: npx wrangler d1 create cms-membership (already done)
 
+# Single consolidated CMS database
 [[d1_databases]]
 binding       = "DB"
-database_name = "cms-membership"
-database_id   = "75e063b5-f7a9-41b2-be46-2a2702c9eef1"
+database_name = "cms"
+database_id   = "3d9706db-0a45-4c18-ac40-3b477cb0c915"
