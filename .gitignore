@@ -9,3 +9,7 @@ resources/_gen/
 
 # macOS
 .DS_Store
+
+# Wrangler cache
+.wrangler/
+*/.wrangler/
