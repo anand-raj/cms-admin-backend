@@ -257,3 +257,200 @@ At this scale, negotiate Razorpay rates, consider Cloudflare Workers Paid at $5/
 3. **Add the newsletter guard** (return an error if subscriber count > 100) to prevent silent partial delivery on the Resend free plan.
 4. **Upgrade Resend to Pro ($20/month) or enable SES routing** before your first newsletter send to a real list.
 5. **Cloudflare Workers Paid ($5/month)** is the only other likely upgrade, and only if you scale past 100K daily requests.
+
+---
+
+## Monthly Cost Estimation — Current Setup
+
+_Last updated: April 2026_
+
+### Complete Service Inventory
+
+| Layer | Service | Purpose |
+|---|---|---|
+| Static site hosting | GitHub Pages | Hugo site at `anand-raj.github.io` |
+| CI/CD | GitHub Actions | Hugo build + deploy on push |
+| CMS UI | Sveltia CMS (self-hosted) | Editorial interface on `/admin` |
+| Admin portal | Cloudflare Pages | React portal at `admin-portal-93k.pages.dev` |
+| API Workers | Cloudflare Workers (3 workers) | Membership, Books, OAuth proxy |
+| Database | Cloudflare D1 (SQLite) | Members, books, orders, events |
+| Email | Resend | Transactional email + newsletter |
+| Payments | Razorpay | Book order processing |
+| Auth | GitHub OAuth | Admin and CMS authentication |
+
+### Fixed Monthly Platform Costs
+
+| Service | Plan | Monthly Cost |
+|---|---|---|
+| GitHub Pages | Free (public repo) | **₹0** |
+| GitHub Actions | Free (public repo) | **₹0** |
+| Sveltia CMS | Open source | **₹0** |
+| Cloudflare Workers | Free tier | **₹0** |
+| Cloudflare D1 | Free tier | **₹0** |
+| Cloudflare Pages | Free tier | **₹0** |
+| Resend | Free tier | **₹0** |
+| Razorpay | No monthly fee | **₹0** |
+| **Total** | | **₹0 / month** |
+
+### Variable Costs (Per-Transaction)
+
+| Event | Cost | Notes |
+|---|---|---|
+| Book sale — ₹499 | ₹9.98 per order | Razorpay 2% domestic |
+| Book sale — ₹999 | ₹19.98 per order | Razorpay 2% domestic |
+| International order | 3% per order | Razorpay international cards |
+| Email delivery | ₹0 | Within Resend free tier (≤ 100/day) |
+| D1 reads / writes | ₹0 | Well within free limits |
+| Worker requests | ₹0 | Well within 100K req/day free limit |
+
+### Realistic Monthly Scenario — Small Site
+
+Assumptions: 5 book orders/month (avg ₹499), 50 newsletter subscribers, ~200 Worker API calls/day.
+
+| Item | Cost |
+|---|---|
+| All platform services | ₹0 |
+| Razorpay (5 × ₹499 × 2%) | ~₹50 |
+| **Total** | **~₹50/month** |
+
+The only recurring spend is Razorpay's transaction cut on actual sales.
+
+### When Free Tiers Will Be Exceeded
+
+| Trigger | Upgrade Needed | Added Cost |
+|---|---|---|
+| Newsletter > 100 subscribers | Resend Pro | ~₹1,700/month |
+| Workers > 100K req/day | Cloudflare Workers Paid | ~₹420/month |
+| D1 > 5 GB storage | Bundled with Workers Paid | Included above |
+| Need custom domain email | Resend Pro or AWS SES relay | ₹1,700/month or ~₹85/month |
+
+**Projected cost at medium scale** (500 members, 50 orders/month, weekly newsletter):
+
+| Item | Cost |
+|---|---|
+| Cloudflare Workers Paid | ~₹420/month |
+| Resend Pro | ~₹1,700/month |
+| Razorpay (50 × ₹499) | ~₹500/month |
+| GitHub / Sveltia | ₹0 |
+| **Total** | **~₹2,620/month** |
+
+---
+
+## AWS Equivalent — Architecture & Cost Comparison
+
+### Component Mapping
+
+| Current (Cloudflare/GitHub) | AWS Equivalent | Notes |
+|---|---|---|
+| GitHub Pages | S3 + CloudFront | S3 static hosting + CDN |
+| GitHub Actions | Keep as-is or CodePipeline + CodeBuild | Recommend keeping GitHub Actions |
+| Sveltia CMS on `/admin` | Same (static files in S3) | No change needed |
+| Cloudflare Pages (Admin Portal) | S3 + CloudFront | Same static pattern |
+| Cloudflare Workers (3 workers) | AWS Lambda + API Gateway | Node.js functions |
+| Cloudflare D1 (SQLite) | Amazon RDS (PostgreSQL) or DynamoDB | D1 has no direct AWS equivalent |
+| Resend | Amazon SES | AWS managed email |
+| Razorpay | Razorpay (unchanged) | No AWS alternative needed |
+| GitHub OAuth | Amazon Cognito or keep GitHub OAuth via Lambda | Cognito adds cost |
+
+### AWS Monthly Cost Breakdown
+
+#### Hosting — S3 + CloudFront
+
+| Resource | Usage | Cost |
+|---|---|---|
+| S3 storage (~50 MB) | Negligible | ~$0 |
+| S3 PUT requests (~1,000/month) | $0.005/1,000 | ~$0.01 |
+| CloudFront data transfer (10 GB/month) | First 1 TB free (12 months) → $0.085/GB | **$0 → $0.85/month** |
+| CloudFront requests (100K/month) | First 10M free | ~$0 |
+
+**Subtotal: ~$0–$1/month**
+
+#### Compute — Lambda + API Gateway
+
+| Resource | Usage | Cost |
+|---|---|---|
+| Lambda invocations (~6,000/month) | First 1M/month free (always free) | $0 |
+| Lambda compute (128 MB, avg 200ms) | First 400,000 GB-s/month free (always free) | $0 |
+| API Gateway REST (6,000 req/month) | First 1M free (12 months) → $3.50/M | **$0 → $0.02/month** |
+
+**Subtotal: ~$0–$0.02/month**
+
+> Lambda's 1M invocation free tier is permanent. API Gateway's free tier expires after 12 months.
+
+#### Database — Amazon RDS or DynamoDB
+
+D1 (SQLite) has no directly equivalent permanent-free AWS service. Two options:
+
+**Option A — RDS db.t4g.micro (PostgreSQL):**
+
+| Resource | Free Tier (12 mo) | After Free Tier |
+|---|---|---|
+| db.t4g.micro instance | 750 hrs/month free | **~$12/month** |
+| Storage (20 GB gp2) | 20 GB free | $0.115/GB/month |
+
+**Option B — DynamoDB (serverless, permanent free tier):**
+
+| Resource | Always Free | Paid |
+|---|---|---|
+| Reads | 25 read capacity units/s | $0.25/M read units |
+| Writes | 25 write capacity units/s | $1.25/M write units |
+| Storage | 25 GB | $0.25/GB/month |
+
+DynamoDB's free tier is permanent and covers this project's scale indefinitely — but requires rewriting all SQL queries to DynamoDB's key-value document model, which is a significant development effort.
+
+**Subtotal: $0 (DynamoDB free tier) or $0 → $12–15/month (RDS after 12 months)**
+
+#### Email — Amazon SES
+
+| Resource | Free Tier | Paid |
+|---|---|---|
+| Emails sent from Lambda | 62,000/month free (12 months) | $0.10/1,000 emails |
+| After free tier (200 emails/month) | — | ~$0.02/month |
+
+SES is effectively free at this project's email volume. Crucially, **there is no daily cap** — a newsletter to any number of subscribers works without truncation.
+
+**Subtotal: ~$0/month (essentially free at this scale)**
+
+### AWS vs Current Stack — Final Comparison
+
+| Component | Current (Cloudflare/GitHub) | AWS (free tier, 12 mo) | AWS (after free tier) |
+|---|---|---|---|
+| Static hosting | ₹0 | $0 | ~$1/month |
+| Admin portal hosting | ₹0 | $0 | ~$0.50/month |
+| API / compute | ₹0 | $0 | ~$0.02/month |
+| Database | ₹0 | $0 (DynamoDB) | $0 (DynamoDB) or **~$12–15/month (RDS)** |
+| Email | ₹0 (100/day cap) | $0 (62K/month, no daily cap) | ~$0.02/month |
+| CDN | ₹0 (Cloudflare) | $0 | ~$0.85/month |
+| CI/CD | ₹0 (GitHub Actions) | $0 (keep GitHub Actions) | $0 |
+| Payments | 2% per transaction | 2% per transaction | Same |
+| **Total fixed** | **₹0/month** | **$0/month** | **~$14–17/month (~₹1,200–1,450)** |
+
+> Currency: $1 ≈ ₹84 (April 2026)
+
+### Key Differences
+
+| Factor | Current Stack | AWS |
+|---|---|---|
+| **Base monthly cost** | ₹0 (permanent) | ₹0 (12 months) → ₹1,200+/month |
+| **Email daily cap** | 100/day (Resend free) | None (SES) |
+| **Database model** | SQLite — standard SQL | RDS PostgreSQL (SQL) or DynamoDB (no SQL) |
+| **Cold starts** | None (Workers always warm) | Lambda cold starts (~200–500ms, occasional) |
+| **Edge latency** | Global edge (Cloudflare PoPs) | Regional by default; requires CloudFront |
+| **Ops complexity** | Near zero | IAM roles, VPC, security groups, RDS snapshots |
+| **Dev migration effort** | — | High — Lambda rewrite, IAM setup, schema migration |
+| **Worker CPU limit** | 10ms (free), 30s (paid) | Up to 15 min (Lambda) |
+| **Vendor lock-in** | Cloudflare APIs | AWS SDK, IAM, proprietary services |
+| **Free tier expiry** | Most limits are permanent | 12-month free tier, then billing starts |
+
+### When AWS Makes More Sense
+
+- You already have an AWS account and existing infrastructure (VPC, IAM, monitoring)
+- You need Lambda's longer execution time (> 10ms CPU per request)
+- Your newsletter list makes the Resend daily cap a real problem and you prefer not to pay Resend Pro
+- You need more complex database queries or transactions that would benefit from RDS PostgreSQL
+
+### Bottom Line
+
+**Stay on the current stack.** It costs ₹0/month in platform fees indefinitely, and the only spend is Razorpay's 2% on actual sales. An AWS migration would cost ₹1,200–₹1,450/month after the 12-month free tier and require substantial rewrite effort with no user-visible benefit at this scale.
+
+The one area where AWS genuinely wins is email: SES has no daily send cap at a fraction of Resend Pro's price. If the newsletter grows past 100 subscribers, the simplest path is the **Resend + SES relay** option (documented in the Resend section above) — no architecture change, SES rates, no daily cap.
