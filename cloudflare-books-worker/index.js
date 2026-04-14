@@ -606,11 +606,14 @@ async function handleAdminUploadBookImage(request, url, env) {
     });
   }
 
-  // Convert to base64 without spread (safe for up to 500 KB)
+  // Encode to base64 using chunked String.fromCharCode (fast, no call-stack overflow)
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
   const base64 = btoa(binary);
 
   await env.DB.prepare(
@@ -633,9 +636,9 @@ async function handleGetBookImage(url, env) {
 
   if (!book || !book.image_data) return new Response('Not found', { status: 404 });
 
+  // Decode base64 using native built-ins (avoids slow charCodeAt loop)
   const binaryStr = atob(book.image_data);
-  const bytes = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+  const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
 
   return new Response(bytes.buffer, {
     headers: {
