@@ -7,8 +7,10 @@ CREATE TABLE IF NOT EXISTS books (
   title       TEXT    NOT NULL,
   author      TEXT,
   description TEXT,
-  price_paise INTEGER NOT NULL,   -- price in paise (₹ × 100), e.g. 49900 = ₹499
-  in_stock    INTEGER DEFAULT 1   -- 1 = in stock, 0 = out of stock
+  price_paise         INTEGER NOT NULL,   -- price in paise (₹ × 100), e.g. 49900 = ₹499
+  in_stock            INTEGER DEFAULT 1,  -- 1 = in stock, 0 = out of stock
+  image_data          TEXT,               -- base64-encoded cover image (≤ 500 KB raw)
+  image_content_type  TEXT                -- MIME type, e.g. image/jpeg
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -34,6 +36,12 @@ CREATE TABLE IF NOT EXISTS orders (
 -- To mark a book out of stock:
 -- npx wrangler d1 execute cms-membership --remote --command \
 --   "UPDATE books SET in_stock = 0 WHERE slug = 'my-book-slug';"
+
+-- Migration: add image columns to existing databases (skip if running schema fresh):
+-- npx wrangler d1 execute cms-membership --remote --command \
+--   "ALTER TABLE books ADD COLUMN image_data TEXT;"
+-- npx wrangler d1 execute cms-membership --remote --command \
+--   "ALTER TABLE books ADD COLUMN image_content_type TEXT;"
 
 -- To view all orders:
 -- npx wrangler d1 execute cms-membership --remote --command \

@@ -168,11 +168,17 @@ async function requireAdmin(request, env) {
 // GET /books
 // ---------------------------------------------------------------------------
 
-async function handleListBooks(env) {
+async function handleListBooks(request, env) {
+  const origin = new URL(request.url).origin;
   const { results } = await env.DB.prepare(
-    `SELECT slug, title, price_paise, in_stock FROM books ORDER BY id DESC`
+    `SELECT id, slug, title, author, description, price_paise, in_stock,
+            (image_data IS NOT NULL) AS has_image FROM books ORDER BY id DESC`
   ).all();
-  return new Response(JSON.stringify(results), {
+  const books = results.map(({ has_image, ...b }) => ({
+    ...b,
+    image_url: has_image ? `${origin}/books/images/${b.id}` : null,
+  }));
+  return new Response(JSON.stringify(books), {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',   // public catalog — no secret data
@@ -446,11 +452,17 @@ async function handleAdminListBooks(request, env) {
     });
   }
 
+  const origin = new URL(request.url).origin;
   const { results } = await env.DB.prepare(
-    `SELECT id, slug, title, author, description, price_paise, in_stock FROM books ORDER BY id DESC`
+    `SELECT id, slug, title, author, description, price_paise, in_stock,
+            (image_data IS NOT NULL) AS has_image FROM books ORDER BY id DESC`
   ).all();
+  const books = results.map(({ has_image, ...b }) => ({
+    ...b,
+    image_url: has_image ? `${origin}/books/images/${b.id}` : null,
+  }));
 
-  return new Response(JSON.stringify(results), {
+  return new Response(JSON.stringify(books), {
     headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
   });
 }
@@ -548,6 +560,96 @@ async function handleAdminUpdateBook(request, url, env) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// POST /admin/books/:id/image  — store cover image in D1 (base64, ≤ 500 KB)
+// GET  /books/images/:id       — serve cover image from D1
+// ---------------------------------------------------------------------------
+
+async function handleAdminUploadBookImage(request, url, env) {
+  if (!await requireAdmin(request, env)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  const id = parseInt(url.pathname.split('/')[3], 10); // /admin/books/:id/image
+  if (!id) {
+    return new Response(JSON.stringify({ error: 'Invalid book id' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  let formData;
+  try { formData = await request.formData(); } catch {
+    return new Response(JSON.stringify({ error: 'Invalid form data' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  const file = formData.get('image');
+  if (!file || typeof file === 'string') {
+    return new Response(JSON.stringify({ error: 'No image file provided' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (!allowedTypes.includes(file.type)) {
+    return new Response(JSON.stringify({ error: 'Only JPEG, PNG, WebP, or GIF images are allowed' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  if (file.size > 500 * 1024) {
+    return new Response(JSON.stringify({ error: 'Image must be under 500 KB' }), {
+      status: 413, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  // Convert to base64 without spread (safe for up to 500 KB)
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+
+  await env.DB.prepare(
+    `UPDATE books SET image_data = ?, image_content_type = ? WHERE id = ?`
+  ).bind(base64, file.type, id).run();
+
+  const origin = new URL(request.url).origin;
+  return new Response(JSON.stringify({ ok: true, url: `${origin}/books/images/${id}` }), {
+    headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+  });
+}
+
+async function handleGetBookImage(url, env) {
+  const id = parseInt(url.pathname.split('/').pop(), 10);
+  if (!id) return new Response('Not found', { status: 404 });
+
+  const book = await env.DB.prepare(
+    `SELECT image_data, image_content_type FROM books WHERE id = ?`
+  ).bind(id).first();
+
+  if (!book || !book.image_data) return new Response('Not found', { status: 404 });
+
+  const binaryStr = atob(book.image_data);
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+  return new Response(bytes.buffer, {
+    headers: {
+      'Content-Type': book.image_content_type || 'application/octet-stream',
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GET  /admin/orders       — list all orders
+// ---------------------------------------------------------------------------
+
 async function handleAdminListOrders(request, env) {
   if (!await requireAdmin(request, env)) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -583,13 +685,19 @@ export default {
       });
     }
 
-    // Parameterised admin routes
-    if (request.method === 'PUT' && url.pathname.startsWith('/admin/books/')) {
+    // Parameterised routes
+    if (request.method === 'PUT' && /^\/admin\/books\/\d+$/.test(url.pathname)) {
       return handleAdminUpdateBook(request, url, env);
+    }
+    if (request.method === 'POST' && /^\/admin\/books\/\d+\/image$/.test(url.pathname)) {
+      return handleAdminUploadBookImage(request, url, env);
+    }
+    if (request.method === 'GET' && /^\/books\/images\/\d+$/.test(url.pathname)) {
+      return handleGetBookImage(url, env);
     }
 
     switch (`${request.method} ${url.pathname}`) {
-      case 'GET /books':               return handleListBooks(env);
+      case 'GET /books':               return handleListBooks(request, env);
       case 'POST /books/create-order': return handleCreateOrder(request, env);
       case 'POST /books/verify':       return handleVerify(request, env);
       case 'GET /admin/books':         return handleAdminListBooks(request, env);
