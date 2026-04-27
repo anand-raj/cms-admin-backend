@@ -397,6 +397,7 @@ async function handleNewsletter(request, env) {
 
 async function validateAdminToken(ghToken, env) {
   // Check cache (SHA-256 keyed, 5-min TTL)
+  // Cached value is JSON { role, section } or the string 'none'.
   const enc     = new TextEncoder();
   const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(ghToken));
   const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -405,14 +406,15 @@ async function validateAdminToken(ghToken, env) {
   const cached   = await cache.match(cacheKey);
   if (cached) {
     const text = await cached.text();
-    return text === 'none' ? null : text; // returns role string or null
+    if (text === 'none') return null;
+    try { return JSON.parse(text); } catch { return null; }
   }
 
-  async function storeResult(role) {
-    await cache.put(cacheKey, new Response(role ?? 'none', {
+  async function storeResult(result) {
+    await cache.put(cacheKey, new Response(result ? JSON.stringify(result) : 'none', {
       headers: { 'Cache-Control': 'public, max-age=300' },
     }));
-    return role;
+    return result;
   }
 
   try {
@@ -428,10 +430,10 @@ async function validateAdminToken(ghToken, env) {
     if (!login) return storeResult(null);
 
     const row = await env.DB.prepare(
-      `SELECT role FROM admins WHERE github_login = ?`
+      `SELECT role, section FROM admins WHERE github_login = ?`
     ).bind(login).first();
 
-    return storeResult(row ? row.role : null);
+    return storeResult(row ? { role: row.role, section: row.section || null } : null);
   } catch {
     return null; // network error — do not cache
   }
@@ -462,19 +464,28 @@ function adminCorsHeaders(env, request) {
 // ---------------------------------------------------------------------------
 
 async function handleAdminMembers(request, env) {
-  if (!await requireAdmin(request, env)) {
+  const admin = await requireAdmin(request, env);
+  if (!admin) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
-  const { results } = await env.DB.prepare(
-    `SELECT id, name, email, status, created_at, approved_at, expires_at,
+  let query = `SELECT id, name, email, status, created_at, approved_at, expires_at,
             occupation, city, state, pincode, phone
-     FROM members
-     ORDER BY created_at DESC`
-  ).all();
+     FROM members`;
+  const params = [];
+
+  // section_editor sees only members from their assigned state
+  if (admin.role === 'section_editor' && admin.section) {
+    query += ` WHERE state = ?`;
+    params.push(admin.section);
+  }
+
+  query += ` ORDER BY created_at DESC`;
+
+  const { results } = await env.DB.prepare(query).bind(...params).all();
 
   return new Response(JSON.stringify(results), {
     headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
@@ -487,7 +498,8 @@ async function handleAdminMembers(request, env) {
 // ---------------------------------------------------------------------------
 
 async function handleAdminApprove(request, env) {
-  if (!await requireAdmin(request, env)) {
+  const admin = await requireAdmin(request, env);
+  if (!admin) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
@@ -508,12 +520,18 @@ async function handleAdminApprove(request, env) {
   }
 
   const row = await env.DB.prepare(
-    `SELECT id, name, email, status FROM members WHERE id = ?`
+    `SELECT id, name, email, status, state FROM members WHERE id = ?`
   ).bind(id).first();
 
   if (!row) {
     return new Response(JSON.stringify({ error: 'Member not found' }), {
       status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  if (admin.role === 'section_editor' && admin.section && row.state !== admin.section) {
+    return new Response(JSON.stringify({ error: 'You can only manage members in your section.' }), {
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -546,7 +564,8 @@ async function handleAdminApprove(request, env) {
 }
 
 async function handleAdminReject(request, env) {
-  if (!await requireAdmin(request, env)) {
+  const admin = await requireAdmin(request, env);
+  if (!admin) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
@@ -567,12 +586,18 @@ async function handleAdminReject(request, env) {
   }
 
   const row = await env.DB.prepare(
-    `SELECT id, name, status FROM members WHERE id = ?`
+    `SELECT id, name, status, state FROM members WHERE id = ?`
   ).bind(id).first();
 
   if (!row) {
     return new Response(JSON.stringify({ error: 'Member not found' }), {
       status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
+  if (admin.role === 'section_editor' && admin.section && row.state !== admin.section) {
+    return new Response(JSON.stringify({ error: 'You can only manage members in your section.' }), {
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
@@ -596,7 +621,8 @@ async function handleAdminReject(request, env) {
 // ---------------------------------------------------------------------------
 
 async function handleAdminRenew(request, env) {
-  if (!await requireAdmin(request, env)) {
+  const admin = await requireAdmin(request, env);
+  if (!admin) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
@@ -616,7 +642,7 @@ async function handleAdminRenew(request, env) {
   }
 
   const row = await env.DB.prepare(
-    `SELECT id, name, email, status FROM members WHERE id = ?`
+    `SELECT id, name, email, status, state FROM members WHERE id = ?`
   ).bind(id).first();
 
   if (!row) {
@@ -624,6 +650,13 @@ async function handleAdminRenew(request, env) {
       status: 404, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
+
+  if (admin.role === 'section_editor' && admin.section && row.state !== admin.section) {
+    return new Response(JSON.stringify({ error: 'You can only manage members in your section.' }), {
+      status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
   if (row.status !== 'approved') {
     return new Response(JSON.stringify({ error: 'Member is not approved' }), {
       status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
@@ -654,7 +687,7 @@ async function handleAdminListAdmins(request, env) {
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT id, github_login, role, added_at FROM admins ORDER BY added_at DESC`
+    `SELECT id, github_login, role, section, added_at FROM admins ORDER BY added_at DESC`
   ).all();
 
   return new Response(JSON.stringify(results), {
@@ -663,8 +696,8 @@ async function handleAdminListAdmins(request, env) {
 }
 
 async function handleAdminAddAdmin(request, env) {
-  const role = await requireAdmin(request, env);
-  if (role !== 'owner') {
+  const admin = await requireAdmin(request, env);
+  if (admin?.role !== 'owner') {
     return new Response(JSON.stringify({ error: 'Only owners can add admins' }), {
       status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
@@ -678,17 +711,27 @@ async function handleAdminAddAdmin(request, env) {
   }
 
   const github_login = String(body.github_login || '').trim().toLowerCase().slice(0, 100);
-  const newRole = ['owner', 'moderator'].includes(body.role) ? body.role : 'moderator';
+  const newRole = ['owner', 'moderator', 'section_editor'].includes(body.role) ? body.role : 'moderator';
+  const newSection = newRole === 'section_editor'
+    ? String(body.section || '').trim().slice(0, 100)
+    : null;
+
   if (!github_login) {
     return new Response(JSON.stringify({ error: 'github_login is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
   }
 
+  if (newRole === 'section_editor' && !newSection) {
+    return new Response(JSON.stringify({ error: 'section (state name) is required for section_editor role' }), {
+      status: 400, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
+    });
+  }
+
   try {
     await env.DB.prepare(
-      `INSERT INTO admins (github_login, role, added_at) VALUES (?, ?, ?)`
-    ).bind(github_login, newRole, new Date().toISOString()).run();
+      `INSERT INTO admins (github_login, role, section, added_at) VALUES (?, ?, ?, ?)`
+    ).bind(github_login, newRole, newSection, new Date().toISOString()).run();
   } catch (e) {
     if (e.message.includes('UNIQUE constraint failed')) {
       return new Response(JSON.stringify({ error: 'This admin already exists' }), {
@@ -704,8 +747,8 @@ async function handleAdminAddAdmin(request, env) {
 }
 
 async function handleAdminRemoveAdmin(request, url, env) {
-  const role = await requireAdmin(request, env);
-  if (role !== 'owner') {
+  const admin = await requireAdmin(request, env);
+  if (admin?.role !== 'owner') {
     return new Response(JSON.stringify({ error: 'Only owners can remove admins' }), {
       status: 403, headers: { 'Content-Type': 'application/json', ...adminCorsHeaders(env, request) },
     });
