@@ -96,7 +96,8 @@ async function validateAdminToken(ghToken, env) {
 async function requireAdmin(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   if (authHeader.startsWith('token ') || authHeader.startsWith('Bearer ')) {
-    const ghToken = authHeader.replace(/^(token|Bearer)\s+/, '');
+    const ghToken = authHeader.replace(/^(token|Bearer)\s+/, '').trim();
+    if (!ghToken) return null;
     return validateAdminToken(ghToken, env);
   }
   return null;
@@ -109,13 +110,16 @@ async function requireAdmin(request, env) {
 // ---------------------------------------------------------------------------
 
 const ALLOWED_EXTENSIONS = new Set([
-  'jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg',
+  'jpg', 'jpeg', 'png', 'webp', 'gif', 'avif',
+  // svg intentionally excluded — SVGs can embed <script> tags and execute JS
+  // when opened directly in a browser (XSS / content injection risk)
   'mp4', 'webm',
   'pdf',
 ]);
 
 const ALLOWED_CONTENT_TYPES = new Set([
-  'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/svg+xml',
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif',
+  // image/svg+xml excluded — see note above
   'video/mp4', 'video/webm',
   'application/pdf',
 ]);
@@ -148,7 +152,12 @@ function formatBytes(bytes) {
 async function listMedia(request, env) {
   const origin = request.headers.get('Origin') || '';
   const url    = new URL(request.url);
-  const prefix = url.searchParams.get('prefix') || '';
+  const rawPrefix = url.searchParams.get('prefix') || '';
+  // Only allow empty prefix (list all) or YYYY/MM[/] shaped prefixes
+  if (rawPrefix && !/^\d{4}\/\d{2}(\/.*)?$/.test(rawPrefix)) {
+    return jsonErr('Invalid prefix.', 400, origin, env);
+  }
+  const prefix = rawPrefix;
   const cursor = url.searchParams.get('cursor')  || undefined;
 
   const listed = await env.MEDIA_BUCKET.list({ prefix, cursor, limit: 200 });
