@@ -1,0 +1,24 @@
+name              = "cms-media"
+main              = "index.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+SITE_URL      = "https://anand-raj.github.io"
+ADMIN_URL     = "https://admin-portal-93k.pages.dev"
+R2_PUBLIC_URL = "https://pub-ef2e502c5f7c4d6d992c8d7758c43027.r2.dev"
+
+# Uploads go through the Worker via the MEDIA_BUCKET binding — no R2 API credentials needed.
+
+# Deploy steps:
+#   npx wrangler deploy
+
+# Uses the same D1 database as all other CMS workers (admins table for auth)
+[[d1_databases]]
+binding       = "DB"
+database_name = "cms"
+database_id   = "3d9706db-0a45-4c18-ac40-3b477cb0c915"
+
+# R2 bucket binding (upload, list, delete)
+[[r2_buckets]]
+binding     = "MEDIA_BUCKET"
+bucket_name = "cms-media"
