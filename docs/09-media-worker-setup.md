@@ -35,8 +35,6 @@ Direct R2 uploads from the browser require exposing an S3 Access Key Secret to t
 - Cloudflare account (free tier is sufficient)
 - Node.js ≥ 18 and npm installed locally
 - Wrangler CLI: `npm install -g wrangler`  (or use `npx wrangler`)
-- An existing D1 database called `cms` with an `admins` table  
-  (see [03-cloudflare-worker.md](03-cloudflare-worker.md) and [06-user-access.md](06-user-access.md))
 - The `cms-backend` repository cloned locally
 
 ---
@@ -63,7 +61,102 @@ npx wrangler whoami
 
 ---
 
-## Step 2 — Create the R2 Bucket
+## Step 2 — Set Up the D1 Database and Admins Table
+
+The Worker authenticates requests by looking up a GitHub login in the `admins` table of a D1 database named `cms`. If you have already set this up for another worker (membership, books, events), skip to [Step 3](#step-3--create-the-r2-bucket) — just make sure the `admins` table has at least one row for the user who will upload media (Step 2c).
+
+### 2a — Create the D1 database (if it doesn't exist)
+
+```bash
+npx wrangler d1 create cms
+```
+
+Wrangler will print the database details:
+
+```
+✅ Successfully created DB 'cms'
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cms"
+database_id = "3d9706db-0a45-4c18-ac40-3b477cb0c915"   ← copy this UUID
+```
+
+Copy the `database_id` — you need it in `wrangler.toml` (Step 6).
+
+To check if the database already exists:
+
+```bash
+npx wrangler d1 list
+```
+
+### 2b — Create the admins table
+
+The schema is in `schema.sql` at the root of this repository. Run it against the remote database:
+
+```bash
+cd cms-backend
+npx wrangler d1 execute cms --remote --file=schema.sql
+```
+
+> **macOS SSL note:** Prefix with `NODE_EXTRA_CA_CERTS=/tmp/system-certs.pem` if you hit SSL errors.
+
+This is idempotent (`CREATE TABLE IF NOT EXISTS`) — safe to run again if the table already exists.
+
+Verify the table was created:
+
+```bash
+npx wrangler d1 execute cms --remote --command="SELECT name FROM sqlite_master WHERE type='table';"
+```
+
+You should see `admins` in the output.
+
+### 2c — Add the first admin user
+
+Insert at least one `owner` row so there is someone who can authenticate:
+
+```bash
+npx wrangler d1 execute cms --remote --command="
+INSERT OR IGNORE INTO admins (github_login, role, added_at)
+VALUES ('your-github-username', 'owner', datetime('now'));
+"
+```
+
+Replace `your-github-username` with the exact GitHub login (case-sensitive as GitHub returns it).
+
+**Roles:**
+
+| Role | Can upload | Can delete | Notes |
+|---|---|---|---|
+| `owner` | ✅ | ✅ | Full access |
+| `moderator` | ✅ | ✅ | Same as owner for media |
+
+Verify the row was inserted:
+
+```bash
+npx wrangler d1 execute cms --remote --command="SELECT * FROM admins;"
+```
+
+### 2d — Add additional admins (optional)
+
+```bash
+npx wrangler d1 execute cms --remote --command="
+INSERT OR IGNORE INTO admins (github_login, role, added_at)
+VALUES ('colleague-github-login', 'moderator', datetime('now'));
+"
+```
+
+To remove an admin:
+
+```bash
+npx wrangler d1 execute cms --remote --command="
+DELETE FROM admins WHERE github_login = 'username-to-remove';
+"
+```
+
+---
+
+## Step 3 — Create the R2 Bucket
 
 ### Option A — Cloudflare Dashboard
 
@@ -86,7 +179,7 @@ npx wrangler r2 bucket list
 
 ---
 
-## Step 3 — Enable Public Access (r2.dev domain)
+## Step 4 — Enable Public Access (r2.dev domain)
 
 Objects must be publicly readable so Hugo pages and other consumers can display media without authentication.
 
@@ -104,7 +197,7 @@ This value goes into `R2_PUBLIC_URL` in `wrangler.toml` and into the admin porta
 
 ---
 
-## Step 4 — Configure R2 CORS (for direct browser reads)
+## Step 5 — Configure R2 CORS (for direct browser reads)
 
 CORS is only needed for cross-origin *reads* (e.g. the admin portal loading thumbnail images from the r2.dev domain).  Uploads go through the Worker — no browser-to-R2 CORS needed for that.
 
@@ -131,9 +224,9 @@ Replace `https://admin-portal-93k.pages.dev` with your actual admin portal URL.
 
 ---
 
-## Step 5 — Find Your D1 Database ID
+## Step 6 — Find Your D1 Database ID
 
-The Worker re-uses the existing `cms` D1 database for auth.  Get its ID:
+If you already ran Step 2, you have the `database_id` from that output. Otherwise retrieve it:
 
 ```bash
 npx wrangler d1 list
@@ -143,7 +236,7 @@ Note the `database_id` UUID for the database named `cms`.
 
 ---
 
-## Step 6 — Create the Worker Project
+## Step 7 — Create the Worker Project
 
 ```bash
 mkdir cloudflare-media-worker
@@ -178,13 +271,13 @@ Replace all placeholder values:
 |---|---|
 | `SITE_URL` | Your Hugo site's public URL |
 | `ADMIN_URL` | Your admin portal URL (Cloudflare Pages) |
-| `R2_PUBLIC_URL` | Copied in Step 3 |
-| `YOUR_D1_DATABASE_ID` | From Step 5 |
-| `bucket_name` | The bucket name from Step 2 |
+| `R2_PUBLIC_URL` | Copied in Step 4 |
+| `YOUR_D1_DATABASE_ID` | From Step 6 |
+| `bucket_name` | The bucket name from Step 3 |
 
 ---
 
-## Step 7 — Add the Worker Code
+## Step 8 — Add the Worker Code
 
 Copy `cloudflare-media-worker/index.js` from this repository into your project directory. The Worker provides these endpoints:
 
@@ -205,7 +298,7 @@ Copy `cloudflare-media-worker/index.js` from this repository into your project d
 
 ---
 
-## Step 8 — Deploy the Worker
+## Step 9 — Deploy the Worker
 
 ```bash
 cd cloudflare-media-worker
@@ -228,7 +321,7 @@ npx wrangler deploy
 
 ---
 
-## Step 9 — Configure the Admin Portal
+## Step 10 — Configure the Admin Portal
 
 In `admin-portal/src/lib/config.js` set:
 
@@ -240,7 +333,7 @@ The admin portal's `api.js` functions (`getMedia`, `uploadMedia`, `deleteMedia`)
 
 ---
 
-## Step 10 — Verify Everything Works
+## Step 11 — Verify Everything Works
 
 ### List media (should return empty array initially)
 
