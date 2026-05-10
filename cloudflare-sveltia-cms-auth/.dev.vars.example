@@ -1,0 +1,6 @@
+# Local development secrets for wrangler dev
+# Copy this file to .dev.vars and fill in your values.
+# .dev.vars is gitignored and must never be committed.
+
+GITHUB_CLIENT_ID=your_github_oauth_app_client_id
+GITHUB_CLIENT_SECRET=your_github_oauth_app_client_secret

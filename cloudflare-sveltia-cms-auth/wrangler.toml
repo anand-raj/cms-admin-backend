@@ -1,0 +1,15 @@
+name = "sveltia-cms-auth"
+main = "src/index.js"
+compatibility_date = "2023-03-24"
+
+[vars]
+# Comma-separated list of allowed site domains.
+# Requests from sites not in this list will be rejected.
+ALLOWED_DOMAINS = "anand-raj.github.io, admin-portal-93k.pages.dev"
+
+# Secrets — set via CLI, never stored in this file:
+#   wrangler secret put GITHUB_CLIENT_ID
+#   wrangler secret put GITHUB_CLIENT_SECRET
+#
+# GitHub OAuth app callback URL must be set to:
+#   https://sveltia-cms-auth.e-anandraj.workers.dev/callback
